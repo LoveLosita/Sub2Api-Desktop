@@ -91,6 +91,10 @@ func (a *App) GetConfig() *config.Config {
 	return a.cfg
 }
 
+func (a *App) GetProxyAddr() string {
+	return fmt.Sprintf("%s:%d", a.cfg.Server.Host, a.cfg.Server.Port)
+}
+
 // ===== Dashboard =====
 
 func (a *App) GetDashboardStats() (*model.DashboardStats, error) {

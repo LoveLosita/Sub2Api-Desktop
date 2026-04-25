@@ -31,6 +31,8 @@ export function GetGroup(arg1:number):Promise<model.Group>;
 
 export function GetProxy(arg1:number):Promise<model.Proxy>;
 
+export function GetProxyAddr():Promise<string>;
+
 export function ListAPIKeys():Promise<Array<model.APIKey>>;
 
 export function ListAccounts():Promise<Array<model.Account>>;

@@ -58,6 +58,10 @@ export function GetProxy(arg1) {
   return window['go']['main']['App']['GetProxy'](arg1);
 }
 
+export function GetProxyAddr() {
+  return window['go']['main']['App']['GetProxyAddr']();
+}
+
 export function ListAPIKeys() {
   return window['go']['main']['App']['ListAPIKeys']();
 }

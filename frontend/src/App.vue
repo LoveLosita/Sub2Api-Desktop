@@ -1,10 +1,20 @@
 <script lang="ts" setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 
 const router = useRouter()
 const route = useRoute()
 const collapsed = ref(false)
+const proxyAddr = ref('')
+
+declare const window: any
+onMounted(async () => {
+  try {
+    if (window['go']?.main?.App?.GetProxyAddr) {
+      proxyAddr.value = await window.go.main.App.GetProxyAddr()
+    }
+  } catch { /* ignore */ }
+})
 
 const navItems = [
   { path: '/dashboard', label: 'Dashboard', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1' },
@@ -58,6 +68,15 @@ function navigate(path: string) {
           <span v-if="!collapsed" class="ml-3">{{ item.label }}</span>
         </button>
       </nav>
+
+      <!-- Proxy status -->
+      <div v-if="!collapsed && proxyAddr" class="px-3 py-2 border-t border-dark-700">
+        <div class="text-dark-500 text-xs mb-0.5">Proxy</div>
+        <div class="flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+          <code class="text-dark-300 text-xs">{{ proxyAddr }}</code>
+        </div>
+      </div>
 
       <!-- Collapse toggle -->
       <div class="p-2 border-t border-dark-700">
