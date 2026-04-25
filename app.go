@@ -5,7 +5,9 @@ import (
 	"desktop-proxy/internal/config"
 	"desktop-proxy/internal/database"
 	"desktop-proxy/internal/model"
+	"desktop-proxy/internal/server"
 	"desktop-proxy/internal/service"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,10 +15,11 @@ import (
 
 // App is the main application struct bound to the Wails frontend.
 type App struct {
-	ctx    context.Context
-	db     *database.DB
-	cfg    *config.Config
+	ctx     context.Context
+	db      *database.DB
+	cfg     *config.Config
 	baseDir string
+	proxy   *server.Server
 
 	accounts *service.AccountService
 	groups   *service.GroupService
@@ -58,6 +61,16 @@ func (a *App) startup(ctx context.Context) {
 	a.proxies = service.NewProxyService(a.db)
 	a.apiKeys = service.NewAPIKeyService(a.db)
 	a.usage = service.NewUsageService(a.db)
+
+	// Start proxy server in background
+	a.proxy = server.New(a.cfg, a.db)
+	go func() {
+		addr := fmt.Sprintf("%s:%d", a.cfg.Server.Host, a.cfg.Server.Port)
+		log.Printf("Proxy server starting on %s", addr)
+		if err := a.proxy.Start(); err != nil {
+			log.Printf("Proxy server error: %v", err)
+		}
+	}()
 
 	log.Println("Desktop Proxy started. DB:", dbPath)
 }
