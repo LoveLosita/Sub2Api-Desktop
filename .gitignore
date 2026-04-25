@@ -1,0 +1,15 @@
+build/bin/
+node_modules/
+frontend/dist/
+*.db
+*.db-wal
+*.db-shm
+config.yaml
+logs/
+*.exe
+*.syso
+.omc/
+.claude/
+sub2api-main/
+frontend/package-lock.json
+frontend/package.json.md5
