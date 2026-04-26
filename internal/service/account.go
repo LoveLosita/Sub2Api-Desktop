@@ -18,10 +18,10 @@ func NewAccountService(db *database.DB) *AccountService {
 func (s *AccountService) List() ([]model.Account, error) {
 	rows, err := s.db.Query(`
 		SELECT id, name, platform, type, credentials, extra, proxy_id,
-			concurrency, priority, status, error_message, schedulable,
+			base_url, concurrency, priority, status, error_message, schedulable,
 			rate_limited_at, rate_limit_reset_at, overload_until, last_used_at,
 			created_at, updated_at
-		FROM accounts ORDER BY priority ASC, id ASC`)
+		FROM accounts WHERE status != 'deleted' ORDER BY priority ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,7 @@ func (s *AccountService) List() ([]model.Account, error) {
 		var creds, extra string
 		var schedulable int
 		err := rows.Scan(&a.ID, &a.Name, &a.Platform, &a.Type, &creds, &extra,
-			&a.ProxyID, &a.Concurrency, &a.Priority, &a.Status, &a.ErrorMessage,
+			&a.ProxyID, &a.BaseURL, &a.Concurrency, &a.Priority, &a.Status, &a.ErrorMessage,
 			&schedulable, &a.RateLimitedAt, &a.RateLimitResetAt, &a.OverloadUntil,
 			&a.LastUsedAt, &a.CreatedAt, &a.UpdatedAt)
 		if err != nil {
@@ -58,12 +58,12 @@ func (s *AccountService) GetByID(id int64) (*model.Account, error) {
 	var schedulable int
 	err := s.db.QueryRow(`
 		SELECT id, name, platform, type, credentials, extra, proxy_id,
-			concurrency, priority, status, error_message, schedulable,
+			base_url, concurrency, priority, status, error_message, schedulable,
 			rate_limited_at, rate_limit_reset_at, overload_until, last_used_at,
 			created_at, updated_at
 		FROM accounts WHERE id = ?`, id).Scan(
 		&a.ID, &a.Name, &a.Platform, &a.Type, &creds, &extra,
-		&a.ProxyID, &a.Concurrency, &a.Priority, &a.Status, &a.ErrorMessage,
+		&a.ProxyID, &a.BaseURL, &a.Concurrency, &a.Priority, &a.Status, &a.ErrorMessage,
 		&schedulable, &a.RateLimitedAt, &a.RateLimitResetAt, &a.OverloadUntil,
 		&a.LastUsedAt, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
@@ -85,10 +85,10 @@ func (s *AccountService) Create(a *model.Account) error {
 	}
 	result, err := s.db.Exec(`
 		INSERT INTO accounts (name, platform, type, credentials, extra, proxy_id,
-			concurrency, priority, status, schedulable)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			base_url, concurrency, priority, status, schedulable)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Name, a.Platform, a.Type, string(creds), string(extra),
-		a.ProxyID, a.Concurrency, a.Priority, a.Status, schedulable)
+		a.ProxyID, a.BaseURL, a.Concurrency, a.Priority, a.Status, schedulable)
 	if err != nil {
 		return err
 	}
@@ -105,10 +105,10 @@ func (s *AccountService) Update(a *model.Account) error {
 	}
 	_, err := s.db.Exec(`
 		UPDATE accounts SET name=?, platform=?, type=?, credentials=?, extra=?,
-			proxy_id=?, concurrency=?, priority=?, status=?, error_message=?,
+			proxy_id=?, base_url=?, concurrency=?, priority=?, status=?, error_message=?,
 			schedulable=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		a.Name, a.Platform, a.Type, string(creds), string(extra),
-		a.ProxyID, a.Concurrency, a.Priority, a.Status, a.ErrorMessage,
+		a.ProxyID, a.BaseURL, a.Concurrency, a.Priority, a.Status, a.ErrorMessage,
 		schedulable, a.ID)
 	if err != nil {
 		return err
@@ -118,7 +118,7 @@ func (s *AccountService) Update(a *model.Account) error {
 
 func (s *AccountService) Delete(id int64) error {
 	s.db.Exec("DELETE FROM account_groups WHERE account_id = ?", id)
-	_, err := s.db.Exec("DELETE FROM accounts WHERE id = ?", id)
+	_, err := s.db.Exec("UPDATE accounts SET status='deleted', updated_at=CURRENT_TIMESTAMP WHERE id = ?", id)
 	return err
 }
 
@@ -148,7 +148,7 @@ func (s *AccountService) MarkUsed(id int64) error {
 func (s *AccountService) GetSchedulableForGroup(groupID int64) ([]model.Account, error) {
 	rows, err := s.db.Query(`
 		SELECT a.id, a.name, a.platform, a.type, a.credentials, a.extra, a.proxy_id,
-			a.concurrency, a.priority, a.status, a.error_message, a.schedulable,
+			a.base_url, a.concurrency, a.priority, a.status, a.error_message, a.schedulable,
 			a.rate_limited_at, a.rate_limit_reset_at, a.overload_until, a.last_used_at,
 			a.created_at, a.updated_at
 		FROM accounts a
@@ -167,7 +167,7 @@ func (s *AccountService) GetSchedulableForGroup(groupID int64) ([]model.Account,
 		var creds, extra string
 		var schedulable int
 		err := rows.Scan(&a.ID, &a.Name, &a.Platform, &a.Type, &creds, &extra,
-			&a.ProxyID, &a.Concurrency, &a.Priority, &a.Status, &a.ErrorMessage,
+			&a.ProxyID, &a.BaseURL, &a.Concurrency, &a.Priority, &a.Status, &a.ErrorMessage,
 			&schedulable, &a.RateLimitedAt, &a.RateLimitResetAt, &a.OverloadUntil,
 			&a.LastUsedAt, &a.CreatedAt, &a.UpdatedAt)
 		if err != nil {
@@ -214,7 +214,7 @@ func (s *AccountService) setGroups(accountID int64, groupIDs []int64) error {
 
 // Stats returns account counts by status.
 func (s *AccountService) Stats() (total, active, errored, rateLimited int, err error) {
-	err = s.db.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&total)
+	err = s.db.QueryRow("SELECT COUNT(*) FROM accounts WHERE status != 'deleted'").Scan(&total)
 	if err != nil {
 		return
 	}

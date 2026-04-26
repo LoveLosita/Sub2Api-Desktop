@@ -29,7 +29,7 @@ func (s *UsageService) Log(log *model.UsageLog) error {
 	return err
 }
 
-func (s *UsageService) List(limit, offset int, modelName, startDate, endDate string) ([]model.UsageLog, int, error) {
+func (s *UsageService) List(limit, offset int, modelName, startDate, endDate string) (*model.UsageListResult, error) {
 	where := "WHERE 1=1"
 	args := []any{}
 	if modelName != "" {
@@ -50,45 +50,69 @@ func (s *UsageService) List(limit, offset int, modelName, startDate, endDate str
 
 	args = append(args, limit, offset)
 	rows, err := s.db.Query(`
-		SELECT id, request_id, api_key_id, account_id, group_id, model, requested_model,
-			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost,
-			stream, duration_ms, first_token_ms, status_code, error_type, created_at
-		FROM usage_logs `+where+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, args...)
+		SELECT ul.id, ul.request_id, ul.api_key_id, ul.account_id, CASE WHEN a.status = 'deleted' THEN '账号已删除' ELSE COALESCE(a.name, '') END,
+			ul.group_id, ul.model, ul.requested_model,
+			ul.input_tokens, ul.output_tokens, ul.cache_creation_tokens, ul.cache_read_tokens,
+			ul.input_cost, ul.output_cost, ul.cache_creation_cost, ul.cache_read_cost, ul.total_cost,
+			ul.stream, ul.duration_ms, ul.first_token_ms, ul.status_code, ul.error_type, ul.created_at
+		FROM usage_logs ul LEFT JOIN accounts a ON ul.account_id = a.id
+		`+where+` ORDER BY ul.created_at DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	defer rows.Close()
 
 	var logs []model.UsageLog
 	for rows.Next() {
 		var l model.UsageLog
-		err := rows.Scan(&l.ID, &l.RequestID, &l.APIKeyID, &l.AccountID, &l.GroupID,
-			&l.Model, &l.RequestedModel, &l.InputTokens, &l.OutputTokens,
+		err := rows.Scan(&l.ID, &l.RequestID, &l.APIKeyID, &l.AccountID, &l.AccountName,
+			&l.GroupID, &l.Model, &l.RequestedModel, &l.InputTokens, &l.OutputTokens,
 			&l.CacheCreationTokens, &l.CacheReadTokens, &l.InputCost, &l.OutputCost,
 			&l.CacheCreationCost, &l.CacheReadCost, &l.TotalCost, &l.Stream,
 			&l.DurationMs, &l.FirstTokenMs, &l.StatusCode, &l.ErrorType, &l.CreatedAt)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		logs = append(logs, l)
 	}
-	return logs, total, nil
+	return &model.UsageListResult{Logs: logs, Total: total}, nil
 }
 
-func (s *UsageService) DashboardStats() (*model.DashboardStats, error) {
+func (s *UsageService) ListModels() ([]string, error) {
+	rows, err := s.db.Query("SELECT DISTINCT model FROM usage_logs ORDER BY model")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var models []string
+	for rows.Next() {
+		var m string
+		rows.Scan(&m)
+		models = append(models, m)
+	}
+	return models, nil
+}
+
+func (s *UsageService) DashboardStats(since string) (*model.DashboardStats, error) {
 	stats := &model.DashboardStats{}
 
-	s.db.QueryRow("SELECT COUNT(*) FROM usage_logs").Scan(&stats.TotalRequests)
-	s.db.QueryRow("SELECT COUNT(*) FROM usage_logs WHERE date(created_at) = date('now')").Scan(&stats.TodayRequests)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) FROM usage_logs").Scan(&stats.TotalTokens)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) FROM usage_logs WHERE date(created_at) = date('now')").Scan(&stats.TodayTokens)
-	s.db.QueryRow("SELECT COALESCE(SUM(total_cost), 0) FROM usage_logs").Scan(&stats.TotalCost)
-	s.db.QueryRow("SELECT COALESCE(SUM(total_cost), 0) FROM usage_logs WHERE date(created_at) = date('now')").Scan(&stats.TodayCost)
+	where := ""
+	args := []any{}
+	if since != "" {
+		where = " WHERE created_at >= ?"
+		args = append(args, since)
+	}
+
+	s.db.QueryRow("SELECT COUNT(*) FROM usage_logs"+where, args...).Scan(&stats.TotalRequests)
+	s.db.QueryRow("SELECT COUNT(*) FROM usage_logs WHERE date(created_at, '+8 hours') = date('now', '+8 hours')").Scan(&stats.TodayRequests)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM usage_logs"+where, args...).Scan(&stats.TotalTokens)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM usage_logs WHERE date(created_at, '+8 hours') = date('now', '+8 hours')").Scan(&stats.TodayTokens)
+	s.db.QueryRow("SELECT COALESCE(SUM(total_cost), 0) FROM usage_logs"+where, args...).Scan(&stats.TotalCost)
+	s.db.QueryRow("SELECT COALESCE(SUM(total_cost), 0) FROM usage_logs WHERE date(created_at, '+8 hours') = date('now', '+8 hours')").Scan(&stats.TodayCost)
 
 	rows, err := s.db.Query(`
 		SELECT model, COUNT(*) as requests, SUM(input_tokens + output_tokens) as tokens, SUM(total_cost) as cost
-		FROM usage_logs GROUP BY model ORDER BY cost DESC LIMIT 10`)
+		FROM usage_logs`+where+` GROUP BY model ORDER BY cost DESC LIMIT 10`, args...)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {

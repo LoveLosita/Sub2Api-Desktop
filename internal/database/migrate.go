@@ -94,8 +94,8 @@ func migrate(db *sql.DB) error {
 			error_type TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (api_key_id) REFERENCES api_keys(id),
-			FOREIGN KEY (account_id) REFERENCES accounts(id),
-			FOREIGN KEY (group_id) REFERENCES groups(id)
+			FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+			FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_model ON usage_logs(model)`,
@@ -120,6 +120,14 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
+	}
+
+	// Migrations for existing databases
+	alterStatements := []string{
+		`ALTER TABLE accounts ADD COLUMN base_url TEXT`,
+	}
+	for _, stmt := range alterStatements {
+		db.Exec(stmt) // Ignore errors if column already exists
 	}
 	return nil
 }

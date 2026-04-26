@@ -211,6 +211,7 @@ export namespace model {
 	    credentials: Record<string, any>;
 	    extra: Record<string, any>;
 	    proxy_id?: number;
+	    base_url?: string;
 	    concurrency: number;
 	    priority: number;
 	    status: string;
@@ -243,6 +244,7 @@ export namespace model {
 	        this.credentials = source["credentials"];
 	        this.extra = source["extra"];
 	        this.proxy_id = source["proxy_id"];
+	        this.base_url = source["base_url"];
 	        this.concurrency = source["concurrency"];
 	        this.priority = source["priority"];
 	        this.status = source["status"];
@@ -345,6 +347,30 @@ export namespace model {
 	}
 	
 	
+	export class ModelPricing {
+	    id: number;
+	    model: string;
+	    input_price: number;
+	    output_price: number;
+	    cache_creation_price: number;
+	    cache_read_price: number;
+	    image_price: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelPricing(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.model = source["model"];
+	        this.input_price = source["input_price"];
+	        this.output_price = source["output_price"];
+	        this.cache_creation_price = source["cache_creation_price"];
+	        this.cache_read_price = source["cache_read_price"];
+	        this.image_price = source["image_price"];
+	    }
+	}
 	export class Proxy {
 	    id: number;
 	    name: string;
@@ -400,6 +426,7 @@ export namespace model {
 	    request_id: string;
 	    api_key_id?: number;
 	    account_id: number;
+	    account_name: string;
 	    group_id?: number;
 	    model: string;
 	    requested_model?: string;
@@ -430,6 +457,7 @@ export namespace model {
 	        this.request_id = source["request_id"];
 	        this.api_key_id = source["api_key_id"];
 	        this.account_id = source["account_id"];
+	        this.account_name = source["account_name"];
 	        this.group_id = source["group_id"];
 	        this.model = source["model"];
 	        this.requested_model = source["requested_model"];
@@ -467,6 +495,65 @@ export namespace model {
 		    }
 		    return a;
 		}
+	}
+	export class UsageListResult {
+	    logs: UsageLog[];
+	    total: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UsageListResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.logs = this.convertValues(source["logs"], UsageLog);
+	        this.total = source["total"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace service {
+	
+	export class HealthCheckResult {
+	    account_id: number;
+	    account_name: string;
+	    platform: string;
+	    healthy: boolean;
+	    latency_ms: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HealthCheckResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.account_id = source["account_id"];
+	        this.account_name = source["account_name"];
+	        this.platform = source["platform"];
+	        this.healthy = source["healthy"];
+	        this.latency_ms = source["latency_ms"];
+	        this.error = source["error"];
+	    }
 	}
 
 }

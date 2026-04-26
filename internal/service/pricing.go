@@ -21,7 +21,8 @@ type modelPrice struct {
 }
 
 var (
-	pricingMu    sync.RWMutex
+	pricingMu       sync.RWMutex
+	pricingSvc      *PricingService
 	modelPricing = map[string]modelPrice{
 		// Claude
 		"claude-opus-4-20250514":          {15, 75, 18.75, 1.875},
@@ -53,18 +54,45 @@ var (
 	}
 )
 
+func SetPricingService(svc *PricingService) {
+	pricingMu.Lock()
+	pricingSvc = svc
+	pricingMu.Unlock()
+}
+
 func CalculateCost(modelName string, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int) CostBreakdown {
+	// input_tokens from upstream includes cached tokens, subtract to avoid double-charging
+	regularInput := inputTokens - cacheCreationTokens - cacheReadTokens
+	if regularInput < 0 {
+		regularInput = 0
+	}
+
+	// Try database first
+	pricingMu.RLock()
+	svc := pricingSvc
+	pricingMu.RUnlock()
+	if svc != nil {
+		if p := svc.GetPrice(modelName); p != nil {
+			return CostBreakdown{
+				InputCost:         float64(regularInput) * p.InputPerM / 1_000_000,
+				OutputCost:        float64(outputTokens) * p.OutputPerM / 1_000_000,
+				CacheCreationCost: float64(cacheCreationTokens) * p.CacheCreationPerM / 1_000_000,
+				CacheReadCost:     float64(cacheReadTokens) * p.CacheReadPerM / 1_000_000,
+			}
+		}
+	}
+
+	// Fallback to hardcoded
 	pricingMu.RLock()
 	price, ok := modelPricing[modelName]
 	pricingMu.RUnlock()
 
 	if !ok {
-		// Default: assume cheap model pricing
 		price = modelPrice{InputPerM: 3, OutputPerM: 15}
 	}
 
 	return CostBreakdown{
-		InputCost:         float64(inputTokens) * price.InputPerM / 1_000_000,
+		InputCost:         float64(regularInput) * price.InputPerM / 1_000_000,
 		OutputCost:        float64(outputTokens) * price.OutputPerM / 1_000_000,
 		CacheCreationCost: float64(cacheCreationTokens) * price.CacheCreationPerM / 1_000_000,
 		CacheReadCost:     float64(cacheReadTokens) * price.CacheReadPerM / 1_000_000,

@@ -10,6 +10,7 @@ type Account struct {
 	Credentials     map[string]any    `json:"credentials"`
 	Extra           map[string]any    `json:"extra"`
 	ProxyID         *int64            `json:"proxy_id"`
+	BaseURL         *string           `json:"base_url"`
 	Concurrency     int               `json:"concurrency"`
 	Priority        int               `json:"priority"`
 	Status          string            `json:"status"`
@@ -71,6 +72,7 @@ type UsageLog struct {
 	RequestID          string    `json:"request_id"`
 	APIKeyID           *int64    `json:"api_key_id"`
 	AccountID          int64     `json:"account_id"`
+	AccountName        string    `json:"account_name"`
 	GroupID            *int64    `json:"group_id"`
 	Model              string    `json:"model"`
 	RequestedModel     *string   `json:"requested_model"`
@@ -120,4 +122,9 @@ type ModelCostEntry struct {
 	Requests  int64   `json:"requests"`
 	Tokens    int64   `json:"tokens"`
 	Cost      float64 `json:"cost"`
+}
+
+type UsageListResult struct {
+	Logs  []UsageLog `json:"logs"`
+	Total int        `json:"total"`
 }

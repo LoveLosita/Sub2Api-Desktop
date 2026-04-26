@@ -53,7 +53,8 @@ func (s *Server) handleGemini(c *gin.Context) {
 	resp, acc, err := s.gateway.DoWithRetry(groupID, "gemini", maxRetries, func(account *model.Account) (*http.Response, error) {
 		ctx.Account = account
 
-		targetURL := "https://generativelanguage.googleapis.com" + path
+		baseURL := getBaseURL(account, "https://generativelanguage.googleapis.com")
+		targetURL := baseURL + path
 		if account.Type == "api_key" {
 			key, _ := account.Credentials["api_key"].(string)
 			if strings.Contains(targetURL, "?") {

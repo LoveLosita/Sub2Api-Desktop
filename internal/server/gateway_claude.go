@@ -60,7 +60,8 @@ func (s *Server) handleClaude(c *gin.Context) {
 
 	resp, acc, err := s.gateway.DoWithRetry(groupID, "claude", maxRetries, func(account *model.Account) (*http.Response, error) {
 		ctx.Account = account
-		targetURL := "https://api.anthropic.com/v1/messages"
+		baseURL := getBaseURL(account, "https://api.anthropic.com/v1")
+		targetURL := baseURL + "/messages"
 		headers := map[string]string{
 			"Content-Type":      "application/json",
 			"anthropic-version": "2023-06-01",

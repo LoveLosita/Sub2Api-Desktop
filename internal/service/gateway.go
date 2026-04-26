@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"desktop-proxy/internal/database"
 	"desktop-proxy/internal/model"
 	"encoding/json"
@@ -59,7 +60,7 @@ func (g *GatewayService) DoRequest(account *model.Account, method, targetURL str
 		}
 	}
 
-	client := &http.Client{Transport: transport, Timeout: 300 * time.Second}
+	client := &http.Client{Transport: transport}
 	req, err := http.NewRequest(method, targetURL, body)
 	if err != nil {
 		return nil, err
@@ -71,6 +72,8 @@ func (g *GatewayService) DoRequest(account *model.Account, method, targetURL str
 }
 
 // DoWithRetry tries multiple accounts for a group with failover.
+// Supports: connection errors, 429, 529, 5xx, 401/403 auto-switch.
+// Failed accounts are tracked and excluded from subsequent picks.
 func (g *GatewayService) DoWithRetry(groupID int64, platform string, maxRetries int,
 	fn func(account *model.Account) (*http.Response, error)) (*http.Response, *model.Account, error) {
 
@@ -78,35 +81,79 @@ func (g *GatewayService) DoWithRetry(groupID int64, platform string, maxRetries 
 		maxRetries = 3
 	}
 
+	failedIDs := make(map[int64]bool)
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Pick account, skipping previously failed ones
 		acc, err := g.scheduler.PickAccount(groupID, platform)
 		if err != nil {
 			return nil, nil, fmt.Errorf("no available account: %w", err)
 		}
+		if failedIDs[acc.ID] {
+			// Try to find another account that hasn't failed
+			altFound := false
+			for i := 0; i < 5; i++ {
+				acc2, err2 := g.scheduler.PickAccount(groupID, platform)
+				if err2 != nil {
+					break
+				}
+				if !failedIDs[acc2.ID] {
+					acc = acc2
+					altFound = true
+					break
+				}
+			}
+			if !altFound {
+				return nil, nil, fmt.Errorf("all accounts exhausted (attempt %d/%d)", attempt+1, maxRetries)
+			}
+		}
 
 		resp, err := fn(acc)
 		if err != nil {
-			log.Printf("[gateway] attempt %d: request error: %v", attempt+1, err)
-			g.account.MarkUsed(acc.ID)
+			log.Printf("[gateway] attempt %d: account %s connection error: %v", attempt+1, acc.Name, err)
+			failedIDs[acc.ID] = true
 			continue
 		}
 
+		// Rate limited — cooldown and switch
 		if resp.StatusCode == 429 {
-			log.Printf("[gateway] account %s rate limited", acc.Name)
+			log.Printf("[gateway] account %s rate limited (429)", acc.Name)
 			resetAt := time.Now().Add(60 * time.Second)
 			g.account.UpdateScheduling(acc.ID, acc.Schedulable, &resetAt, &resetAt, nil)
 			resp.Body.Close()
+			failedIDs[acc.ID] = true
 			continue
 		}
 
+		// Overloaded — cooldown and switch
 		if resp.StatusCode == 529 {
-			log.Printf("[gateway] account %s overloaded", acc.Name)
+			log.Printf("[gateway] account %s overloaded (529)", acc.Name)
 			until := time.Now().Add(30 * time.Second)
 			g.account.UpdateScheduling(acc.ID, acc.Schedulable, nil, nil, &until)
 			resp.Body.Close()
+			failedIDs[acc.ID] = true
 			continue
 		}
 
+		// Auth errors — switch to different account
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			log.Printf("[gateway] account %s auth error (%d), marking as error", acc.Name, resp.StatusCode)
+			errMsg := fmt.Sprintf("认证失败: HTTP %d", resp.StatusCode)
+			g.account.UpdateStatus(acc.ID, "error", &errMsg)
+			resp.Body.Close()
+			failedIDs[acc.ID] = true
+			continue
+		}
+
+		// Server errors — retry with different account
+		if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
+			log.Printf("[gateway] account %s server error (%d), switching", acc.Name, resp.StatusCode)
+			resp.Body.Close()
+			failedIDs[acc.ID] = true
+			continue
+		}
+
+		// Success or non-retryable client error (400, 404, etc.)
 		g.account.MarkUsed(acc.ID)
 		return resp, acc, nil
 	}
@@ -168,7 +215,14 @@ func (g *GatewayService) LogUsage(apiKey *model.APIKey, group *model.Group, acco
 	}
 }
 
+// scanEvent represents a single line read from upstream SSE.
+type scanEvent struct {
+	line string
+	err  error
+}
+
 // StreamResponse proxies a streaming response (SSE) to the client and logs usage.
+// Uses goroutine + bufio.Scanner + channel pattern (adapted from sub2api).
 func (g *GatewayService) StreamResponse(w http.ResponseWriter, resp *http.Response, ctx *RequestContext) {
 	defer resp.Body.Close()
 
@@ -181,25 +235,72 @@ func (g *GatewayService) StreamResponse(w http.ResponseWriter, resp *http.Respon
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(resp.StatusCode)
 
-	var totalOutputTokens int
-	buf := make([]byte, 4096)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			w.Write(buf[:n])
-			flusher.Flush()
-			chunk := string(buf[:n])
-			if strings.Contains(chunk, "usage") {
-				totalOutputTokens = extractOutputTokens(chunk, totalOutputTokens)
+	usage := &streamUsageData{}
+
+	// Goroutine reads upstream lines via Scanner, sends through channel.
+	// This decouples upstream reading from downstream writing,
+	// allowing us to drain upstream even after client disconnects.
+	events := make(chan scanEvent, 32)
+	done := make(chan struct{})
+	go func() {
+		defer close(events)
+		buf := make([]byte, 64*1024)
+		scanner := newLineScanner(resp.Body, buf)
+		for scanner.Scan() {
+			select {
+			case events <- scanEvent{line: scanner.Text()}:
+			case <-done:
+				return
 			}
 		}
-		if err != nil {
+		if err := scanner.Err(); err != nil {
+			select {
+			case events <- scanEvent{err: err}:
+			case <-done:
+			}
+		}
+	}()
+	defer close(done)
+
+	clientDisconnected := false
+
+	// Main loop: receive lines, accumulate SSE events, forward + extract usage
+	for ev := range events {
+		if ev.err != nil {
+			if clientDisconnected {
+				log.Printf("[gateway] upstream read error after client disconnect: %v", ev.err)
+			}
 			break
+		}
+
+		line := ev.line
+
+		// Extract usage from data lines
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data != "[DONE]" {
+				extractUsageFromData(data, usage)
+			}
+		}
+
+		// Write to client only if still connected
+		if !clientDisconnected {
+			if _, werr := fmt.Fprintln(w, line); werr != nil {
+				clientDisconnected = true
+				log.Printf("[gateway] client disconnected during streaming, continuing to drain upstream for billing")
+			} else {
+				// Empty line = end of SSE event, flush
+				if strings.TrimSpace(line) == "" {
+					flusher.Flush()
+				}
+			}
 		}
 	}
 
+	// Log usage
 	duration := time.Since(ctx.StartTime).Milliseconds()
 	var groupID *int64
 	var apiKeyID *int64
@@ -216,21 +317,27 @@ func (g *GatewayService) StreamResponse(w http.ResponseWriter, resp *http.Respon
 		errType = http.StatusText(statusCode)
 	}
 
-	costs := CalculateCost(ctx.Model, 0, totalOutputTokens, 0, 0)
+	costs := CalculateCost(ctx.Model, usage.inputTokens, usage.outputTokens, usage.cacheCreation, usage.cacheRead)
 	usageLog := &model.UsageLog{
-		RequestID:      ctx.RequestID,
-		APIKeyID:       apiKeyID,
-		AccountID:      ctx.Account.ID,
-		GroupID:        groupID,
-		Model:          ctx.Model,
-		RequestedModel: strPtr(ctx.RequestedModel),
-		OutputTokens:   totalOutputTokens,
-		OutputCost:     costs.OutputCost,
-		TotalCost:      costs.OutputCost,
-		Stream:         true,
-		DurationMs:     intPtr(int(duration)),
-		StatusCode:     intPtr(statusCode),
-		ErrorType:      strPtr(errType),
+		RequestID:           ctx.RequestID,
+		APIKeyID:            apiKeyID,
+		AccountID:           ctx.Account.ID,
+		GroupID:             groupID,
+		Model:               ctx.Model,
+		RequestedModel:      strPtr(ctx.RequestedModel),
+		InputTokens:         usage.inputTokens,
+		OutputTokens:        usage.outputTokens,
+		CacheCreationTokens: usage.cacheCreation,
+		CacheReadTokens:     usage.cacheRead,
+		InputCost:           costs.InputCost,
+		OutputCost:          costs.OutputCost,
+		CacheCreationCost:   costs.CacheCreationCost,
+		CacheReadCost:       costs.CacheReadCost,
+		TotalCost:           costs.Total(),
+		Stream:              true,
+		DurationMs:          intPtr(int(duration)),
+		StatusCode:          intPtr(statusCode),
+		ErrorType:           strPtr(errType),
 	}
 	if logErr := g.usage.Log(usageLog); logErr != nil {
 		log.Printf("[gateway] failed to log stream usage: %v", logErr)
@@ -240,33 +347,123 @@ func (g *GatewayService) StreamResponse(w http.ResponseWriter, resp *http.Respon
 func strPtr(s string) *string { return &s }
 func intPtr(i int) *int       { return &i }
 
-func extractOutputTokens(chunk string, current int) int {
-	for _, line := range strings.Split(chunk, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+// newLineScanner creates a bufio.Scanner with a 64KB buffer for SSE line reading.
+func newLineScanner(r io.Reader, buf []byte) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(buf, 1024*1024) // max line 1MB
+	return s
+}
+
+type streamUsageData struct {
+	inputTokens   int
+	outputTokens  int
+	cacheCreation int
+	cacheRead     int
+}
+
+// parseSSEInt extracts an int from any JSON numeric type (adapted from sub2api).
+func parseSSEInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return int(i), true
 		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			continue
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return parsed, true
 		}
-		var obj map[string]any
-		if json.Unmarshal([]byte(data), &obj) != nil {
-			continue
+	}
+	return 0, false
+}
+
+// extractUsageFromData parses a single SSE data payload and extracts token usage.
+// Supports Claude (message_start/message_delta), OpenAI Chat (usage),
+// OpenAI Responses (response.usage), and Gemini (usageMetadata).
+func extractUsageFromData(data string, u *streamUsageData) {
+	var obj map[string]any
+	if json.Unmarshal([]byte(data), &obj) != nil {
+		return
+	}
+
+	// --- Claude: message_start / message_delta ---
+	// message_start → obj.message.usage (input_tokens, cache_creation/read_input_tokens)
+	// message_delta → obj.usage (output_tokens)
+	if msg, ok := obj["message"].(map[string]any); ok {
+		if usage, ok := msg["usage"].(map[string]any); ok {
+			mergeClaudeUsage(usage, u)
 		}
-		if usage, ok := obj["usage"].(map[string]any); ok {
-			if ot, ok := usage["output_tokens"].(float64); ok && int(ot) > current {
-				return int(ot)
+	}
+	if usage, ok := obj["usage"].(map[string]any); ok {
+		mergeClaudeUsage(usage, u)
+	}
+
+	// --- OpenAI Chat Completions: obj.usage with prompt_tokens/completion_tokens ---
+	if usage, ok := obj["usage"].(map[string]any); ok {
+		if v, ok := parseSSEInt(usage["prompt_tokens"]); ok && v > u.inputTokens {
+			u.inputTokens = v
+		}
+		if v, ok := parseSSEInt(usage["completion_tokens"]); ok && v > u.outputTokens {
+			u.outputTokens = v
+		}
+		if v, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+			if ct, ok := parseSSEInt(v["cached_tokens"]); ok && ct > u.cacheRead {
+				u.cacheRead = ct
 			}
 		}
-		if msg, ok := obj["message"].(map[string]any); ok {
-			if usage, ok := msg["usage"].(map[string]any); ok {
-				if ot, ok := usage["output_tokens"].(float64); ok && int(ot) > current {
-					return int(ot)
+	}
+
+	// --- OpenAI Responses API: obj.response.usage ---
+	if resp, ok := obj["response"].(map[string]any); ok {
+		if usage, ok := resp["usage"].(map[string]any); ok {
+			if v, ok := parseSSEInt(usage["input_tokens"]); ok && v > u.inputTokens {
+				u.inputTokens = v
+			}
+			if v, ok := parseSSEInt(usage["output_tokens"]); ok && v > u.outputTokens {
+				u.outputTokens = v
+			}
+			if details, ok := usage["input_tokens_details"].(map[string]any); ok {
+				if ct, ok := parseSSEInt(details["cached_tokens"]); ok && ct > u.cacheRead {
+					u.cacheRead = ct
 				}
 			}
 		}
 	}
-	return current
+
+	// --- Gemini: obj.usageMetadata ---
+	if meta, ok := obj["usageMetadata"].(map[string]any); ok {
+		if v, ok := parseSSEInt(meta["promptTokenCount"]); ok && v > u.inputTokens {
+			u.inputTokens = v
+		}
+		if v, ok := parseSSEInt(meta["candidatesTokenCount"]); ok && v > u.outputTokens {
+			u.outputTokens = v
+		}
+		if v, ok := parseSSEInt(meta["cachedContentTokenCount"]); ok && v > u.cacheRead {
+			u.cacheRead = v
+		}
+	}
+}
+
+func mergeClaudeUsage(usage map[string]any, u *streamUsageData) {
+	if v, ok := parseSSEInt(usage["input_tokens"]); ok && v > u.inputTokens {
+		u.inputTokens = v
+	}
+	if v, ok := parseSSEInt(usage["output_tokens"]); ok && v > u.outputTokens {
+		u.outputTokens = v
+	}
+	if v, ok := parseSSEInt(usage["cache_creation_input_tokens"]); ok && v > u.cacheCreation {
+		u.cacheCreation = v
+	}
+	if v, ok := parseSSEInt(usage["cache_read_input_tokens"]); ok && v > u.cacheRead {
+		u.cacheRead = v
+	}
 }
 
 // ExtractIntField safely extracts an int from a map.

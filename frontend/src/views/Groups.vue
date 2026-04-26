@@ -31,10 +31,12 @@ async function load() {
   loading.value = true
   try {
     const [g, a] = await Promise.all([ListGroups(), ListAccounts()])
-    groups.value = g
-    accounts.value = a
+    groups.value = g ?? []
+    accounts.value = a ?? []
   } catch (e) {
     console.error(e)
+    groups.value = []
+    accounts.value = []
   } finally {
     loading.value = false
   }
@@ -75,17 +77,17 @@ async function save() {
     showModal.value = false
     await load()
   } catch (e) {
-    alert('Save failed: ' + e)
+    alert('保存失败: ' + e)
   }
 }
 
 async function remove(id: number) {
-  if (!confirm('Delete this group?')) return
+  if (!confirm('确定删除此分组？')) return
   try {
     await DeleteGroup(id)
     await load()
   } catch (e) {
-    alert('Delete failed: ' + e)
+    alert('删除失败: ' + e)
   }
 }
 
@@ -103,16 +105,16 @@ function accountName(id: number): string {
 <template>
   <div>
     <div class="flex items-center justify-between mb-6">
-      <h1 class="text-2xl font-bold text-white">Groups</h1>
+      <h1 class="text-2xl font-bold text-white">分组管理</h1>
       <button @click="openCreate" class="px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded-lg text-sm transition-colors">
-        + Add Group
+        + 添加分组
       </button>
     </div>
 
-    <div v-if="loading" class="text-dark-400">Loading...</div>
+    <div v-if="loading" class="text-dark-400">加载中...</div>
 
     <div v-else-if="groups.length === 0" class="bg-dark-800 rounded-lg p-6 border border-dark-700 text-dark-400 text-center">
-      No groups yet. Click "Add Group" to create one.
+      暂无分组，点击"添加分组"创建一个。
     </div>
 
     <div v-else class="space-y-4">
@@ -122,15 +124,15 @@ function accountName(id: number): string {
             <h3 class="text-white font-semibold">{{ g.name }}</h3>
             <div class="flex items-center gap-3 mt-1">
               <span class="text-xs px-2 py-0.5 rounded bg-dark-700 text-dark-300">{{ g.platform }}</span>
-              <span class="text-xs" :class="g.status === 'active' ? 'text-green-400' : 'text-dark-400'">{{ g.status }}</span>
-              <span class="text-dark-500 text-xs">Multiplier: {{ g.rate_multiplier }}x</span>
-              <span v-if="g.is_exclusive" class="text-xs px-2 py-0.5 rounded bg-yellow-900/30 text-yellow-400">exclusive</span>
+              <span class="text-xs" :class="g.status === 'active' ? 'text-green-400' : 'text-dark-400'">{{ g.status === 'active' ? '正常' : '禁用' }}</span>
+              <span class="text-dark-500 text-xs">倍率: {{ g.rate_multiplier }}x</span>
+              <span v-if="g.is_exclusive" class="text-xs px-2 py-0.5 rounded bg-yellow-900/30 text-yellow-400">独占</span>
             </div>
             <div v-if="g.description" class="text-dark-400 text-sm mt-1">{{ g.description }}</div>
           </div>
           <div class="flex gap-2">
-            <button @click="openEdit(g)" class="text-primary-400 hover:text-primary-300 text-sm">Edit</button>
-            <button @click="remove(g.id)" class="text-red-400 hover:text-red-300 text-sm">Delete</button>
+            <button @click="openEdit(g)" class="text-primary-400 hover:text-primary-300 text-sm">编辑</button>
+            <button @click="remove(g.id)" class="text-red-400 hover:text-red-300 text-sm">删除</button>
           </div>
         </div>
         <div v-if="g.account_ids && g.account_ids.length" class="mt-3 flex flex-wrap gap-1">
@@ -144,22 +146,22 @@ function accountName(id: number): string {
     <!-- Modal -->
     <div v-if="showModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" @click.self="showModal = false">
       <div class="bg-dark-800 rounded-xl border border-dark-700 w-full max-w-lg max-h-[80vh] overflow-y-auto p-6">
-        <h2 class="text-lg font-semibold text-white mb-4">{{ editing ? 'Edit Group' : 'Add Group' }}</h2>
+        <h2 class="text-lg font-semibold text-white mb-4">{{ editing ? '编辑分组' : '添加分组' }}</h2>
 
         <div class="space-y-4">
           <div>
-            <label class="block text-dark-300 text-sm mb-1">Name</label>
-            <input v-model="form.name" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none" placeholder="Group name" />
+            <label class="block text-dark-300 text-sm mb-1">名称</label>
+            <input v-model="form.name" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none" placeholder="分组名称" />
           </div>
 
           <div>
-            <label class="block text-dark-300 text-sm mb-1">Description</label>
-            <input v-model="form.description" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none" placeholder="Optional description" />
+            <label class="block text-dark-300 text-sm mb-1">描述</label>
+            <input v-model="form.description" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none" placeholder="可选描述" />
           </div>
 
           <div class="grid grid-cols-2 gap-4">
             <div>
-              <label class="block text-dark-300 text-sm mb-1">Platform</label>
+              <label class="block text-dark-300 text-sm mb-1">平台</label>
               <select v-model="form.platform" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none">
                 <option value="claude">claude</option>
                 <option value="openai">openai</option>
@@ -167,43 +169,43 @@ function accountName(id: number): string {
               </select>
             </div>
             <div>
-              <label class="block text-dark-300 text-sm mb-1">Rate Multiplier</label>
+              <label class="block text-dark-300 text-sm mb-1">倍率</label>
               <input v-model.number="form.rate_multiplier" type="number" step="0.1" min="0" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none" />
             </div>
           </div>
 
           <div class="grid grid-cols-2 gap-4">
             <div>
-              <label class="block text-dark-300 text-sm mb-1">Status</label>
+              <label class="block text-dark-300 text-sm mb-1">状态</label>
               <select v-model="form.status" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none">
-                <option value="active">active</option>
-                <option value="disabled">disabled</option>
+                <option value="active">正常</option>
+                <option value="disabled">禁用</option>
               </select>
             </div>
             <label class="flex items-end gap-2 pb-1 text-dark-300 text-sm cursor-pointer">
               <input v-model="form.is_exclusive" type="checkbox" class="rounded" />
-              Exclusive
+              独占
             </label>
           </div>
 
-          <!-- Account Selection -->
+          <!-- 账号选择 -->
           <div>
-            <label class="block text-dark-300 text-sm mb-2">Accounts</label>
+            <label class="block text-dark-300 text-sm mb-2">关联账号</label>
             <div class="bg-dark-900 border border-dark-600 rounded-lg p-2 max-h-40 overflow-y-auto space-y-1">
               <label v-for="acc in accounts" :key="acc.id" class="flex items-center gap-2 px-2 py-1 hover:bg-dark-700 rounded cursor-pointer">
                 <input type="checkbox" :checked="form.account_ids.includes(acc.id)" @change="toggleAccount(acc.id)" class="rounded" />
                 <span class="text-white text-sm">{{ acc.name }}</span>
                 <span class="text-dark-500 text-xs">{{ acc.platform }}</span>
               </label>
-              <div v-if="accounts.length === 0" class="text-dark-500 text-sm px-2">No accounts available</div>
+              <div v-if="accounts.length === 0" class="text-dark-500 text-sm px-2">暂无可用账号</div>
             </div>
           </div>
         </div>
 
         <div class="flex justify-end gap-3 mt-6">
-          <button @click="showModal = false" class="px-4 py-2 text-dark-300 hover:text-white text-sm transition-colors">Cancel</button>
+          <button @click="showModal = false" class="px-4 py-2 text-dark-300 hover:text-white text-sm transition-colors">取消</button>
           <button @click="save" class="px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded-lg text-sm transition-colors">
-            {{ editing ? 'Update' : 'Create' }}
+            {{ editing ? '更新' : '创建' }}
           </button>
         </div>
       </div>

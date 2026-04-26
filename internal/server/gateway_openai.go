@@ -70,15 +70,18 @@ func (s *Server) handleOpenAIChat(c *gin.Context) {
 			ctx.Model = resolveClaudeModel(requestedModel)
 			claudeBody["model"] = ctx.Model
 			modifiedBody, _ := json.Marshal(claudeBody)
-			return s.gateway.DoRequest(account, "POST", "https://api.anthropic.com/v1/messages", claudeHeaders(account), bytes.NewReader(modifiedBody))
+			claudeURL := getBaseURL(account, "https://api.anthropic.com/v1") + "/messages"
+			return s.gateway.DoRequest(account, "POST", claudeURL, claudeHeaders(account), bytes.NewReader(modifiedBody))
 		case "gemini":
 			key, _ := account.Credentials["api_key"].(string)
-			targetURL := "https://generativelanguage.googleapis.com/v1beta/models/" + requestedModel + ":generateContent?key=" + key
+			geminiBase := getBaseURL(account, "https://generativelanguage.googleapis.com/v1beta")
+			targetURL := geminiBase + "/models/" + requestedModel + ":generateContent?key=" + key
 			modifiedBody, _ := json.Marshal(reqBody)
 			return s.gateway.DoRequest(account, "POST", targetURL, geminiHeaders(account), bytes.NewReader(modifiedBody))
 		default:
 			modifiedBody, _ := json.Marshal(reqBody)
-			return s.gateway.DoRequest(account, "POST", "https://api.openai.com/v1/chat/completions", openaiHeaders(account), bytes.NewReader(modifiedBody))
+			openaiURL := getBaseURL(account, "https://api.openai.com/v1") + "/chat/completions"
+			return s.gateway.DoRequest(account, "POST", openaiURL, openaiHeaders(account), bytes.NewReader(modifiedBody))
 		}
 	})
 
@@ -132,6 +135,10 @@ func (s *Server) handleOpenAIResponses(c *gin.Context) {
 	var reqBody map[string]any
 	json.Unmarshal(bodyBytes, &reqBody)
 	requestedModel, _ := reqBody["model"].(string)
+	stream := false
+	if sv, ok := reqBody["stream"].(bool); ok {
+		stream = sv
+	}
 
 	var groupID int64
 	if grp, ok := group.(*model.Group); ok && grp != nil {
@@ -144,27 +151,48 @@ func (s *Server) handleOpenAIResponses(c *gin.Context) {
 		Platform:       "openai",
 		StartTime:      time.Now(),
 		RequestID:      fmt.Sprintf("req_%d", time.Now().UnixNano()),
+		Stream:         stream,
 		Model:          requestedModel,
 		RequestedModel: requestedModel,
 	}
 
-	resp, _, err := s.gateway.DoWithRetry(groupID, "openai", 3, func(account *model.Account) (*http.Response, error) {
+	maxRetries := s.cfg.Gateway.MaxAccountRetries
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+
+	resp, acc, err := s.gateway.DoWithRetry(groupID, "openai", maxRetries, func(account *model.Account) (*http.Response, error) {
 		ctx.Account = account
 		modifiedBody, _ := json.Marshal(reqBody)
-		return s.gateway.DoRequest(account, "POST", "https://api.openai.com/v1/responses", openaiHeaders(account), bytes.NewReader(modifiedBody))
+		responsesURL := getBaseURL(account, "https://api.openai.com/v1") + "/responses"
+		return s.gateway.DoRequest(account, "POST", responsesURL, openaiHeaders(account), bytes.NewReader(modifiedBody))
 	})
 
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
 		return
 	}
+	_ = acc
+
+	if stream {
+		s.gateway.StreamResponse(c.Writer, resp, ctx)
+		return
+	}
 
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 
+	var respObj map[string]any
+	json.Unmarshal(respBody, &respObj)
+	inputTokens, outputTokens := 0, 0
+	if usage, ok := respObj["usage"].(map[string]any); ok {
+		inputTokens = service.ExtractIntField(usage, "input_tokens")
+		outputTokens = service.ExtractIntField(usage, "output_tokens")
+	}
+
 	duration := time.Since(ctx.StartTime).Milliseconds()
 	s.gateway.LogUsage(ctx.APIKey, ctx.Group, ctx.Account, ctx.RequestID, ctx.Model, ctx.RequestedModel,
-		0, 0, 0, 0, duration, false, resp)
+		inputTokens, outputTokens, 0, 0, duration, false, resp)
 
 	for k, vs := range resp.Header {
 		for _, v := range vs {
@@ -205,7 +233,8 @@ func (s *Server) handleOpenAIImages(c *gin.Context) {
 	resp, _, err := s.gateway.DoWithRetry(groupID, "openai", 3, func(account *model.Account) (*http.Response, error) {
 		ctx.Account = account
 		modifiedBody, _ := json.Marshal(reqBody)
-		return s.gateway.DoRequest(account, "POST", "https://api.openai.com/v1/images/generations", openaiHeaders(account), bytes.NewReader(modifiedBody))
+		imagesURL := getBaseURL(account, "https://api.openai.com/v1") + "/images/generations"
+		return s.gateway.DoRequest(account, "POST", imagesURL, openaiHeaders(account), bytes.NewReader(modifiedBody))
 	})
 
 	if err != nil {

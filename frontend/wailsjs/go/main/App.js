@@ -34,6 +34,10 @@ export function DeleteProxy(arg1) {
   return window['go']['main']['App']['DeleteProxy'](arg1);
 }
 
+export function FetchRemotePricing() {
+  return window['go']['main']['App']['FetchRemotePricing']();
+}
+
 export function GetAccount(arg1) {
   return window['go']['main']['App']['GetAccount'](arg1);
 }
@@ -46,8 +50,8 @@ export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
 
-export function GetDashboardStats() {
-  return window['go']['main']['App']['GetDashboardStats']();
+export function GetDashboardStats(arg1) {
+  return window['go']['main']['App']['GetDashboardStats'](arg1);
 }
 
 export function GetGroup(arg1) {
@@ -62,6 +66,14 @@ export function GetProxyAddr() {
   return window['go']['main']['App']['GetProxyAddr']();
 }
 
+export function HealthCheckAccount(arg1, arg2) {
+  return window['go']['main']['App']['HealthCheckAccount'](arg1, arg2);
+}
+
+export function HealthCheckAllAccounts(arg1) {
+  return window['go']['main']['App']['HealthCheckAllAccounts'](arg1);
+}
+
 export function ListAPIKeys() {
   return window['go']['main']['App']['ListAPIKeys']();
 }
@@ -74,6 +86,10 @@ export function ListGroups() {
   return window['go']['main']['App']['ListGroups']();
 }
 
+export function ListPricing() {
+  return window['go']['main']['App']['ListPricing']();
+}
+
 export function ListProxies() {
   return window['go']['main']['App']['ListProxies']();
 }
@@ -82,12 +98,24 @@ export function ListUsage(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['ListUsage'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function ListUsageModels() {
+  return window['go']['main']['App']['ListUsageModels']();
+}
+
+export function ResetPricing() {
+  return window['go']['main']['App']['ResetPricing']();
+}
+
 export function UpdateAccount(arg1) {
   return window['go']['main']['App']['UpdateAccount'](arg1);
 }
 
 export function UpdateGroup(arg1) {
   return window['go']['main']['App']['UpdateGroup'](arg1);
+}
+
+export function UpdatePricing(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdatePricing'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function UpdateProxy(arg1) {
