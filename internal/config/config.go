@@ -21,8 +21,9 @@ type ServerConfig struct {
 }
 
 type GatewayConfig struct {
-	MaxBodySize       int64 `yaml:"max_body_size"`
-	MaxAccountRetries int   `yaml:"max_account_retries"`
+	MaxBodySize       int64  `yaml:"max_body_size"`
+	MaxAccountRetries int    `yaml:"max_account_retries"`
+	PricingURL        string `yaml:"pricing_url"`
 }
 
 type DatabaseConfig struct {

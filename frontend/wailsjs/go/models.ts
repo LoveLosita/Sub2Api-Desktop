@@ -27,6 +27,7 @@ export namespace config {
 	export class GatewayConfig {
 	    MaxBodySize: number;
 	    MaxAccountRetries: number;
+	    PricingURL: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new GatewayConfig(source);
@@ -36,6 +37,7 @@ export namespace config {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.MaxBodySize = source["MaxBodySize"];
 	        this.MaxAccountRetries = source["MaxAccountRetries"];
+	        this.PricingURL = source["PricingURL"];
 	    }
 	}
 	export class ServerConfig {

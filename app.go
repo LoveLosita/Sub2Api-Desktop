@@ -79,7 +79,7 @@ func (a *App) startup(ctx context.Context) {
 	a.apiKeys = service.NewAPIKeyService(a.db)
 	a.usage = service.NewUsageService(a.db)
 
-	a.pricing = service.NewPricingService(a.db)
+	a.pricing = service.NewPricingService(a.db, a.cfg.Gateway.PricingURL)
 	a.pricing.Seed()
 	service.SetPricingService(a.pricing)
 
