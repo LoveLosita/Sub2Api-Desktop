@@ -115,6 +115,7 @@ type DashboardStats struct {
 	TotalCost        float64          `json:"total_cost"`
 	TodayCost        float64          `json:"today_cost"`
 	ByModel          []ModelCostEntry `json:"by_model"`
+	TodayByModel     []ModelCostEntry `json:"today_by_model"`
 }
 
 type ModelCostEntry struct {

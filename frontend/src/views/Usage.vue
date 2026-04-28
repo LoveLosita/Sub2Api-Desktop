@@ -66,10 +66,13 @@ function formatDuration(ms: number | undefined | null): string {
 
 function toShanghai(utcStr: string | undefined | null): string {
   if (!utcStr) return '—'
-  const d = new Date(utcStr.replace(' ', 'T') + 'Z')
+  let str = utcStr.includes('T') ? utcStr : utcStr.replace(' ', 'T')
+  let d = new Date(str)
+  if (isNaN(d.getTime())) d = new Date(str + 'Z')
   if (isNaN(d.getTime())) return utcStr
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  const bj = new Date(d.getTime() + 8 * 3600_000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())} ${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}:${pad(bj.getUTCSeconds())}`
 }
 
 watch([modelFilter, startDate, endDate], () => {

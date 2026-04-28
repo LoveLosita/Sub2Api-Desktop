@@ -309,6 +309,7 @@ export namespace model {
 	    total_cost: number;
 	    today_cost: number;
 	    by_model: ModelCostEntry[];
+	    today_by_model: ModelCostEntry[];
 	
 	    static createFrom(source: any = {}) {
 	        return new DashboardStats(source);
@@ -327,6 +328,7 @@ export namespace model {
 	        this.total_cost = source["total_cost"];
 	        this.today_cost = source["today_cost"];
 	        this.by_model = this.convertValues(source["by_model"], ModelCostEntry);
+	        this.today_by_model = this.convertValues(source["today_by_model"], ModelCostEntry);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -121,5 +121,18 @@ func (s *UsageService) DashboardStats(since string) (*model.DashboardStats, erro
 			stats.ByModel = append(stats.ByModel, e)
 		}
 	}
+
+	todayRows, err := s.db.Query(`
+		SELECT model, COUNT(*) as requests, SUM(input_tokens + output_tokens) as tokens, SUM(total_cost) as cost
+		FROM usage_logs WHERE date(created_at, '+8 hours') = date('now', '+8 hours') GROUP BY model ORDER BY cost DESC LIMIT 10`)
+	if err == nil {
+		defer todayRows.Close()
+		for todayRows.Next() {
+			var e model.ModelCostEntry
+			todayRows.Scan(&e.Model, &e.Requests, &e.Tokens, &e.Cost)
+			stats.TodayByModel = append(stats.TodayByModel, e)
+		}
+	}
+
 	return stats, nil
 }
