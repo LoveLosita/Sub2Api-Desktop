@@ -64,6 +64,37 @@ func (s *SchedulerService) PickAccount(groupID int64, platform string) (*model.A
 	return &picked, nil
 }
 
+// PickAccountAnyPlatform selects the next available account for the given group regardless of platform.
+func (s *SchedulerService) PickAccountAnyPlatform(groupID int64) (*model.Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	as := NewAccountService(s.db)
+	accounts, err := as.GetSchedulableForGroup(groupID)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("no available accounts in group %d", groupID)
+	}
+
+	key := fmt.Sprintf("%d:any", groupID)
+	idx := s.index[key] % len(accounts)
+
+	for i := 0; i < len(accounts); i++ {
+		candidate := accounts[(idx+i)%len(accounts)]
+		if candidate.Status == "active" && candidate.Schedulable {
+			s.index[key] = (idx + i + 1) % len(accounts)
+			return &candidate, nil
+		}
+	}
+
+	picked := accounts[0]
+	s.index[key] = (idx + 1) % len(accounts)
+	return &picked, nil
+}
+
 // PickAccountForPlatform selects an account without a group (uses any active account of the platform).
 func (s *SchedulerService) PickAccountForPlatform(platform string) (*model.Account, error) {
 	s.mu.Lock()

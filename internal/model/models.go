@@ -13,6 +13,7 @@ type Account struct {
 	BaseURL         *string           `json:"base_url"`
 	Concurrency     int               `json:"concurrency"`
 	Priority        int               `json:"priority"`
+	Multiplier      float64           `json:"multiplier"`
 	Status          string            `json:"status"`
 	ErrorMessage    *string           `json:"error_message"`
 	Schedulable     bool              `json:"schedulable"`

@@ -34,13 +34,6 @@ func (s *Server) handleOpenAIChat(c *gin.Context) {
 		stream = sv
 	}
 
-	platform := "openai"
-	if isClaudeModel(requestedModel) {
-		platform = "claude"
-	} else if isGeminiModel(requestedModel) {
-		platform = "gemini"
-	}
-
 	var groupID int64
 	if grp, ok := group.(*model.Group); ok && grp != nil {
 		groupID = grp.ID
@@ -49,7 +42,7 @@ func (s *Server) handleOpenAIChat(c *gin.Context) {
 	ctx := &service.RequestContext{
 		APIKey:         apiKey.(*model.APIKey),
 		Group:          group.(*model.Group),
-		Platform:       platform,
+		Platform:       "openai",
 		StartTime:      time.Now(),
 		RequestID:      fmt.Sprintf("req_%d", time.Now().UnixNano()),
 		Stream:         stream,
@@ -62,16 +55,11 @@ func (s *Server) handleOpenAIChat(c *gin.Context) {
 		maxRetries = 3
 	}
 
-	resp, acc, err := s.gateway.DoWithRetry(groupID, platform, maxRetries, func(account *model.Account) (*http.Response, error) {
+	resp, acc, err := s.gateway.DoWithRetryAnyPlatform(groupID, maxRetries, func(account *model.Account) (*http.Response, error) {
 		ctx.Account = account
 		switch account.Platform {
 		case "claude":
-			claudeBody := convertOpenAIToClaude(reqBody)
-			ctx.Model = resolveClaudeModel(requestedModel)
-			claudeBody["model"] = ctx.Model
-			modifiedBody, _ := json.Marshal(claudeBody)
-			claudeURL := getBaseURL(account, "https://api.anthropic.com/v1") + "/messages"
-			return s.gateway.DoRequest(account, "POST", claudeURL, claudeHeaders(account), bytes.NewReader(modifiedBody))
+			return s.sendOpenAIRequestToClaude(reqBody, ctx, account, requestedModel)
 		case "gemini":
 			key, _ := account.Credentials["api_key"].(string)
 			geminiBase := getBaseURL(account, "https://generativelanguage.googleapis.com/v1beta")
@@ -90,13 +78,29 @@ func (s *Server) handleOpenAIChat(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error()}})
 		return
 	}
-	_ = acc
 
+	switch acc.Platform {
+	case "claude":
+		s.handleClaudeResponseAsOpenAI(c, resp, ctx, stream, requestedModel)
+	default:
+		s.handleOpenAIResponseDirect(c, resp, ctx, stream)
+	}
+}
+
+func (s *Server) sendOpenAIRequestToClaude(oaiReq map[string]any, ctx *service.RequestContext, account *model.Account, requestedModel string) (*http.Response, error) {
+	claudeBody := convertOpenAIToClaude(oaiReq)
+	ctx.Model = resolveClaudeModel(requestedModel)
+	claudeBody["model"] = ctx.Model
+	modifiedBody, _ := json.Marshal(claudeBody)
+	claudeURL := getBaseURL(account, "https://api.anthropic.com/v1") + "/messages"
+	return s.gateway.DoRequest(account, "POST", claudeURL, claudeHeaders(account), bytes.NewReader(modifiedBody))
+}
+
+func (s *Server) handleOpenAIResponseDirect(c *gin.Context, resp *http.Response, ctx *service.RequestContext, stream bool) {
 	if stream {
 		s.gateway.StreamResponse(c.Writer, resp, ctx)
 		return
 	}
-
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 
@@ -119,6 +123,38 @@ func (s *Server) handleOpenAIChat(c *gin.Context) {
 	}
 	c.Writer.WriteHeader(resp.StatusCode)
 	c.Writer.Write(respBody)
+}
+
+func (s *Server) handleClaudeResponseAsOpenAI(c *gin.Context, resp *http.Response, ctx *service.RequestContext, stream bool, model string) {
+	if stream {
+		converter := NewClaudeToOpenAIStreamConverter(model)
+		s.gateway.StreamResponseWithConverter(c.Writer, resp, ctx, converter.Convert)
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	var claudeResp map[string]any
+	json.Unmarshal(respBody, &claudeResp)
+
+	inputTokens, outputTokens, cacheCreation, cacheRead := 0, 0, 0, 0
+	if usage, ok := claudeResp["usage"].(map[string]any); ok {
+		inputTokens = service.ExtractIntField(usage, "input_tokens")
+		outputTokens = service.ExtractIntField(usage, "output_tokens")
+		cacheCreation = service.ExtractIntField(usage, "cache_creation_input_tokens")
+		cacheRead = service.ExtractIntField(usage, "cache_read_input_tokens")
+	}
+
+	duration := time.Since(ctx.StartTime).Milliseconds()
+	s.gateway.LogUsage(ctx.APIKey, ctx.Group, ctx.Account, ctx.RequestID, ctx.Model, ctx.RequestedModel,
+		inputTokens, outputTokens, cacheCreation, cacheRead, duration, false, resp)
+
+	oaiResp := convertClaudeResponseToOpenAI(claudeResp, model)
+	oaiBody, _ := json.Marshal(oaiResp)
+
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(resp.StatusCode)
+	c.Writer.Write(oaiBody)
 }
 
 func (s *Server) handleOpenAIResponses(c *gin.Context) {

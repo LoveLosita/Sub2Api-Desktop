@@ -28,6 +28,7 @@ function emptyForm() {
     base_url: '' as string,
     concurrency: 3,
     priority: 50,
+    multiplier: 1,
     status: 'active',
     error_message: '',
     schedulable: true,
@@ -84,6 +85,7 @@ function openEdit(a: model.Account) {
     base_url: a.base_url ?? '',
     concurrency: a.concurrency,
     priority: a.priority,
+    multiplier: a.multiplier ?? 1,
     status: a.status,
     error_message: a.error_message ?? '',
     schedulable: a.schedulable,
@@ -109,7 +111,7 @@ function toggleGroup(gid: number) {
 }
 
 const filteredGroups = computed(() => {
-  return groups.value.filter(g => g.platform === form.value.platform)
+  return groups.value
 })
 
 async function save() {
@@ -235,6 +237,7 @@ const credFields = computed(() => {
             <th class="text-left px-4 py-3">认证类型</th>
             <th class="text-center px-4 py-3">优先级</th>
             <th class="text-center px-4 py-3">并发数</th>
+            <th class="text-center px-4 py-3">倍率</th>
             <th class="text-left px-4 py-3">状态</th>
             <th class="text-left px-4 py-3">健康检查</th>
             <th class="text-right px-4 py-3">操作</th>
@@ -251,6 +254,9 @@ const credFields = computed(() => {
             </td>
             <td class="px-4 py-3 text-white text-sm text-center">{{ a.priority }}</td>
             <td class="px-4 py-3 text-white text-sm text-center">{{ a.concurrency }}</td>
+            <td class="px-4 py-3 text-center">
+              <span :class="a.multiplier !== 1 ? 'text-yellow-400' : 'text-dark-400'" class="text-sm">{{ a.multiplier ?? 1 }}x</span>
+            </td>
             <td class="px-4 py-3">
               <span :class="statusClass(a.status)" class="text-sm">{{ a.status }}</span>
               <div v-if="a.error_message" class="text-red-400 text-xs mt-0.5 truncate max-w-48" :title="a.error_message">{{ a.error_message }}</div>
@@ -326,7 +332,7 @@ const credFields = computed(() => {
             />
           </div>
 
-          <div class="grid grid-cols-3 gap-4">
+          <div class="grid grid-cols-4 gap-4">
             <div>
               <label class="block text-dark-300 text-sm mb-1">优先级</label>
               <input v-model.number="form.priority" type="number" min="0" max="100" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none" />
@@ -334,6 +340,10 @@ const credFields = computed(() => {
             <div>
               <label class="block text-dark-300 text-sm mb-1">并发数</label>
               <input v-model.number="form.concurrency" type="number" min="1" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none" />
+            </div>
+            <div>
+              <label class="block text-dark-300 text-sm mb-1">费用倍率</label>
+              <input v-model.number="form.multiplier" type="number" min="0" step="0.1" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm focus:border-primary-500 outline-none" />
             </div>
             <div>
               <label class="block text-dark-300 text-sm mb-1">状态</label>

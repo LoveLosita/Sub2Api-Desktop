@@ -3,14 +3,14 @@ chcp 65001 >nul
 
 cd /d "%~dp0"
 
-:: Backup data files before clean
+:: Backup data files before clean (outside build dir to survive -clean)
 if exist "build\bin\data.db" (
     echo [0/3] Backing up data files...
-    if not exist "build\backup" mkdir "build\backup"
-    copy /Y "build\bin\data.db" "build\backup\data.db" >nul 2>&1
-    copy /Y "build\bin\data.db-wal" "build\backup\data.db-wal" >nul 2>&1
-    copy /Y "build\bin\data.db-shm" "build\backup\data.db-shm" >nul 2>&1
-    copy /Y "build\bin\config.yaml" "build\backup\config.yaml" >nul 2>&1
+    if not exist ".build-backup" mkdir ".build-backup"
+    copy /Y "build\bin\data.db" ".build-backup\data.db" >nul 2>&1
+    copy /Y "build\bin\data.db-wal" ".build-backup\data.db-wal" >nul 2>&1
+    copy /Y "build\bin\data.db-shm" ".build-backup\data.db-shm" >nul 2>&1
+    copy /Y "build\bin\config.yaml" ".build-backup\config.yaml" >nul 2>&1
     echo       Done.
 )
 
@@ -33,12 +33,12 @@ if %errorlevel% neq 0 (
 )
 
 :: Restore data files after clean
-if exist "build\backup\data.db" (
+if exist ".build-backup\data.db" (
     echo [3/3] Restoring data files...
-    copy /Y "build\backup\data.db" "build\bin\data.db" >nul 2>&1
-    copy /Y "build\backup\data.db-wal" "build\bin\data.db-wal" >nul 2>&1
-    copy /Y "build\backup\data.db-shm" "build\bin\data.db-shm" >nul 2>&1
-    copy /Y "build\backup\config.yaml" "build\bin\config.yaml" >nul 2>&1
+    copy /Y ".build-backup\data.db" "build\bin\data.db" >nul 2>&1
+    copy /Y ".build-backup\data.db-wal" "build\bin\data.db-wal" >nul 2>&1
+    copy /Y ".build-backup\data.db-shm" "build\bin\data.db-shm" >nul 2>&1
+    copy /Y ".build-backup\config.yaml" "build\bin\config.yaml" >nul 2>&1
     echo       Done.
 ) else (
     echo [3/3] Done!

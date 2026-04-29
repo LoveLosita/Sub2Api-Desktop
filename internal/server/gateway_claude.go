@@ -58,33 +58,16 @@ func (s *Server) handleClaude(c *gin.Context) {
 		maxRetries = 3
 	}
 
-	resp, acc, err := s.gateway.DoWithRetry(groupID, "claude", maxRetries, func(account *model.Account) (*http.Response, error) {
+	resp, acc, err := s.gateway.DoWithRetryAnyPlatform(groupID, maxRetries, func(account *model.Account) (*http.Response, error) {
 		ctx.Account = account
-		baseURL := getBaseURL(account, "https://api.anthropic.com/v1")
-		targetURL := baseURL + "/messages"
-		headers := map[string]string{
-			"Content-Type":      "application/json",
-			"anthropic-version": "2023-06-01",
+		switch account.Platform {
+		case "claude":
+			return s.sendToClaude(reqBody, ctx, account)
+		case "openai":
+			return s.sendClaudeRequestToOpenAI(reqBody, ctx, account, requestedModel)
+		default:
+			return s.sendToClaude(reqBody, ctx, account)
 		}
-
-		switch account.Type {
-		case "api_key":
-			if key, ok := account.Credentials["api_key"].(string); ok {
-				headers["x-api-key"] = key
-			}
-		case "oauth":
-			if token, ok := account.Credentials["access_token"].(string); ok {
-				headers["Authorization"] = "Bearer " + token
-			}
-		case "cookie":
-			if sk, ok := account.Credentials["session_key"].(string); ok {
-				headers["Cookie"] = "sessionKey=" + sk
-			}
-		}
-
-		reqBody["model"] = ctx.Model
-		modifiedBody, _ := json.Marshal(reqBody)
-		return s.gateway.DoRequest(account, "POST", targetURL, headers, bytes.NewReader(modifiedBody))
 	})
 
 	if err != nil {
@@ -92,13 +75,49 @@ func (s *Server) handleClaude(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "api_error", "message": err.Error()}})
 		return
 	}
-	_ = acc
 
+	switch acc.Platform {
+	case "openai":
+		s.handleOpenAIResponseAsClaude(c, resp, ctx, stream, requestedModel)
+	default:
+		s.handleClaudeResponseDirect(c, resp, ctx, stream)
+	}
+}
+
+func (s *Server) sendToClaude(reqBody map[string]any, ctx *service.RequestContext, account *model.Account) (*http.Response, error) {
+	baseURL := getBaseURL(account, "https://api.anthropic.com/v1")
+	targetURL := baseURL + "/messages"
+	headers := claudeHeaders(account)
+	body := make(map[string]any, len(reqBody))
+	for k, v := range reqBody {
+		body[k] = v
+	}
+	body["model"] = ctx.Model
+	modifiedBody, _ := json.Marshal(body)
+	return s.gateway.DoRequest(account, "POST", targetURL, headers, bytes.NewReader(modifiedBody))
+}
+
+func (s *Server) sendClaudeRequestToOpenAI(claudeReq map[string]any, ctx *service.RequestContext, account *model.Account, requestedModel string) (*http.Response, error) {
+	oaiReq := convertClaudeToOpenAIRequest(claudeReq)
+	oaiReq["model"] = requestedModel
+	ctx.Model = requestedModel
+	modifiedBody, _ := json.Marshal(oaiReq)
+	openaiURL := getBaseURL(account, "https://api.openai.com/v1") + "/chat/completions"
+	log.Printf("[claude→openai] account=%s model=%s url=%s", account.Name, requestedModel, openaiURL)
+	resp, err := s.gateway.DoRequest(account, "POST", openaiURL, openaiHeaders(account), bytes.NewReader(modifiedBody))
+	if err != nil {
+		log.Printf("[claude→openai] connection error: %v", err)
+	} else {
+		log.Printf("[claude→openai] status=%d", resp.StatusCode)
+	}
+	return resp, err
+}
+
+func (s *Server) handleClaudeResponseDirect(c *gin.Context, resp *http.Response, ctx *service.RequestContext, stream bool) {
 	if stream {
 		s.gateway.StreamResponse(c.Writer, resp, ctx)
 		return
 	}
-
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 
@@ -124,6 +143,38 @@ func (s *Server) handleClaude(c *gin.Context) {
 	}
 	c.Writer.WriteHeader(resp.StatusCode)
 	c.Writer.Write(respBody)
+}
+
+func (s *Server) handleOpenAIResponseAsClaude(c *gin.Context, resp *http.Response, ctx *service.RequestContext, stream bool, model string) {
+	if stream {
+		converter := NewOpenAIToClaudeStreamConverter(model)
+		s.gateway.StreamResponseWithConverter(c.Writer, resp, ctx, converter.Convert)
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	var oaiResp map[string]any
+	json.Unmarshal(respBody, &oaiResp)
+
+	// Extract usage for billing from OpenAI format
+	inputTokens, outputTokens := 0, 0
+	if usage, ok := oaiResp["usage"].(map[string]any); ok {
+		inputTokens = service.ExtractIntField(usage, "prompt_tokens")
+		outputTokens = service.ExtractIntField(usage, "completion_tokens")
+	}
+
+	duration := time.Since(ctx.StartTime).Milliseconds()
+	s.gateway.LogUsage(ctx.APIKey, ctx.Group, ctx.Account, ctx.RequestID, ctx.Model, ctx.RequestedModel,
+		inputTokens, outputTokens, 0, 0, duration, false, resp)
+
+	// Convert response to Claude format
+	claudeResp := convertOpenAIResponseToClaude(oaiResp, model)
+	claudeBody, _ := json.Marshal(claudeResp)
+
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(resp.StatusCode)
+	c.Writer.Write(claudeBody)
 }
 
 func resolveClaudeModel(requested string) string {

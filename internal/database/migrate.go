@@ -125,6 +125,7 @@ func migrate(db *sql.DB) error {
 	// Migrations for existing databases
 	alterStatements := []string{
 		`ALTER TABLE accounts ADD COLUMN base_url TEXT`,
+		`ALTER TABLE accounts ADD COLUMN multiplier REAL DEFAULT 1.0`,
 	}
 	for _, stmt := range alterStatements {
 		db.Exec(stmt) // Ignore errors if column already exists

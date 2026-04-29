@@ -216,6 +216,7 @@ export namespace model {
 	    base_url?: string;
 	    concurrency: number;
 	    priority: number;
+	    multiplier: number;
 	    status: string;
 	    error_message?: string;
 	    schedulable: boolean;
@@ -249,6 +250,7 @@ export namespace model {
 	        this.base_url = source["base_url"];
 	        this.concurrency = source["concurrency"];
 	        this.priority = source["priority"];
+	        this.multiplier = source["multiplier"];
 	        this.status = source["status"];
 	        this.error_message = source["error_message"];
 	        this.schedulable = source["schedulable"];

@@ -2,48 +2,31 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { GetDashboardStats } from '../../wailsjs/go/main/App'
 import { model } from '../../wailsjs/go/models'
+import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 
 const stats = ref<model.DashboardStats | null>(null)
 const loading = ref(true)
 const errorMsg = ref('')
 const since = ref('')
-const viewMode = ref<'total' | 'today'>('total')
-const autoRefresh = ref(true)
-let timer: ReturnType<typeof setInterval> | null = null
+const viewMode = ref<'total' | 'today'>(localStorage.getItem('dashboard_viewMode') === 'today' ? 'today' : 'total')
+let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
+function onUsageLogged() {
+  if (debounceTimer) return
+  load()
+  debounceTimer = setTimeout(() => { debounceTimer = null }, 500)
+}
 
 onMounted(() => {
   since.value = localStorage.getItem('dashboard_since') || ''
   load()
-  startTimer()
+  EventsOn('usage:logged', onUsageLogged)
 })
 
 onUnmounted(() => {
-  stopTimer()
+  EventsOff('usage:logged')
+  if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null }
 })
-
-function startTimer() {
-  stopTimer()
-  if (autoRefresh.value) {
-    timer = setInterval(() => load(), 10000)
-  }
-}
-
-function stopTimer() {
-  if (timer) {
-    clearInterval(timer)
-    timer = null
-  }
-}
-
-function toggleAutoRefresh() {
-  autoRefresh.value = !autoRefresh.value
-  if (autoRefresh.value) {
-    load()
-    startTimer()
-  } else {
-    stopTimer()
-  }
-}
 
 const apiSince = computed(() => {
   if (viewMode.value === 'total') return ''
@@ -64,6 +47,7 @@ async function load() {
 }
 
 watch(apiSince, () => load())
+watch(viewMode, (v) => localStorage.setItem('dashboard_viewMode', v))
 
 function resetDashboard() {
   since.value = toUtcString(new Date())
@@ -160,11 +144,6 @@ function formatCost(n: number | undefined): string {
         <button v-if="viewMode === 'today'" @click="resetDashboard"
           class="px-3 py-1.5 bg-dark-700 hover:bg-dark-600 text-dark-200 text-xs rounded-lg transition-colors border border-dark-600">
           重置看板
-        </button>
-        <button @click="toggleAutoRefresh"
-          class="px-3 py-1.5 text-xs rounded-lg transition-colors border"
-          :class="autoRefresh ? 'bg-green-900/40 border-green-700/50 text-green-400' : 'bg-dark-700 border-dark-600 text-dark-400 hover:text-dark-200'">
-          {{ autoRefresh ? '自动刷新 10s' : '已暂停' }}
         </button>
       </div>
     </div>

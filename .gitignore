@@ -1,4 +1,5 @@
 build/bin/
+.build-backup/
 node_modules/
 frontend/dist/
 *.db

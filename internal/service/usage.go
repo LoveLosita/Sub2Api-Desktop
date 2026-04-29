@@ -6,7 +6,8 @@ import (
 )
 
 type UsageService struct {
-	db *database.DB
+	db    *database.DB
+	OnLog func()
 }
 
 func NewUsageService(db *database.DB) *UsageService {
@@ -26,6 +27,9 @@ func (s *UsageService) Log(log *model.UsageLog) error {
 		log.InputCost, log.OutputCost, log.CacheCreationCost, log.CacheReadCost,
 		log.TotalCost, log.Stream, log.DurationMs, log.FirstTokenMs,
 		log.StatusCode, log.ErrorType)
+	if err == nil && s.OnLog != nil {
+		go s.OnLog()
+	}
 	return err
 }
 

@@ -1,7 +1,8 @@
 <script lang="ts" setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { ListUsage, ListUsageModels } from '../../wailsjs/go/main/App'
 import { model } from '../../wailsjs/go/models'
+import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 
 const logs = ref<model.UsageLog[]>([])
 const total = ref(0)
@@ -12,10 +13,23 @@ const modelFilter = ref('')
 const modelOptions = ref<string[]>([])
 const startDate = ref('')
 const endDate = ref('')
+let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
+function onUsageLogged() {
+  if (debounceTimer) return
+  load()
+  debounceTimer = setTimeout(() => { debounceTimer = null }, 500)
+}
 
 onMounted(() => {
   loadModels()
   load()
+  EventsOn('usage:logged', onUsageLogged)
+})
+
+onUnmounted(() => {
+  EventsOff('usage:logged')
+  if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null }
 })
 
 async function loadModels() {

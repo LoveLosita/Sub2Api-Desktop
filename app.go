@@ -87,6 +87,9 @@ func (a *App) startup(ctx context.Context) {
 
 	// Start proxy server in background
 	a.proxy = server.New(a.cfg, a.db)
+	a.proxy.SetOnUsageLogged(func() {
+		wailsRuntime.EventsEmit(a.ctx, "usage:logged")
+	})
 	go func() {
 		addr := fmt.Sprintf("%s:%d", a.cfg.Server.Host, a.cfg.Server.Port)
 		log.Printf("Proxy server starting on %s", addr)

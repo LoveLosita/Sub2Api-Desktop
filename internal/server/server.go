@@ -32,6 +32,10 @@ func New(cfg *config.Config, db *database.DB) *Server {
 	}
 }
 
+func (s *Server) SetOnUsageLogged(fn func()) {
+	s.gateway.SetOnUsageLogged(fn)
+}
+
 func (s *Server) Start() error {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

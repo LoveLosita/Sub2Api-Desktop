@@ -31,6 +31,10 @@ func NewGatewayService(db *database.DB) *GatewayService {
 	}
 }
 
+func (g *GatewayService) SetOnUsageLogged(fn func()) {
+	g.usage.OnLog = fn
+}
+
 // RequestContext holds state for a single proxy request (used by server package).
 type RequestContext struct {
 	APIKey         *model.APIKey
@@ -161,6 +165,93 @@ func (g *GatewayService) DoWithRetry(groupID int64, platform string, maxRetries 
 	return nil, nil, fmt.Errorf("all %d attempts failed", maxRetries)
 }
 
+// DoWithRetryAnyPlatform is the same as DoWithRetry but picks accounts of any platform.
+func (g *GatewayService) DoWithRetryAnyPlatform(groupID int64, maxRetries int,
+	fn func(account *model.Account) (*http.Response, error)) (*http.Response, *model.Account, error) {
+
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+
+	failedIDs := make(map[int64]bool)
+	var lastErr string
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		acc, err := g.scheduler.PickAccountAnyPlatform(groupID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("no available account: %w", err)
+		}
+		if failedIDs[acc.ID] {
+			altFound := false
+			for i := 0; i < 5; i++ {
+				acc2, err2 := g.scheduler.PickAccountAnyPlatform(groupID)
+				if err2 != nil {
+					break
+				}
+				if !failedIDs[acc2.ID] {
+					acc = acc2
+					altFound = true
+					break
+				}
+			}
+			if !altFound {
+				return nil, nil, fmt.Errorf("all accounts exhausted (attempt %d/%d), last error: %s", attempt+1, maxRetries, lastErr)
+			}
+		}
+
+		resp, err := fn(acc)
+		if err != nil {
+			lastErr = fmt.Sprintf("account %s (platform=%s) connection error: %v", acc.Name, acc.Platform, err)
+			log.Printf("[gateway] attempt %d: %s", attempt+1, lastErr)
+			failedIDs[acc.ID] = true
+			continue
+		}
+
+		if resp.StatusCode == 429 {
+			lastErr = fmt.Sprintf("account %s (platform=%s) rate limited (429)", acc.Name, acc.Platform)
+			log.Printf("[gateway] %s", lastErr)
+			resetAt := time.Now().Add(60 * time.Second)
+			g.account.UpdateScheduling(acc.ID, acc.Schedulable, &resetAt, &resetAt, nil)
+			resp.Body.Close()
+			failedIDs[acc.ID] = true
+			continue
+		}
+
+		if resp.StatusCode == 529 {
+			lastErr = fmt.Sprintf("account %s (platform=%s) overloaded (529)", acc.Name, acc.Platform)
+			log.Printf("[gateway] %s", lastErr)
+			until := time.Now().Add(30 * time.Second)
+			g.account.UpdateScheduling(acc.ID, acc.Schedulable, nil, nil, &until)
+			resp.Body.Close()
+			failedIDs[acc.ID] = true
+			continue
+		}
+
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			lastErr = fmt.Sprintf("account %s (platform=%s) auth error (%d)", acc.Name, acc.Platform, resp.StatusCode)
+			log.Printf("[gateway] %s", lastErr)
+			errMsg := fmt.Sprintf("认证失败: HTTP %d", resp.StatusCode)
+			g.account.UpdateStatus(acc.ID, "error", &errMsg)
+			resp.Body.Close()
+			failedIDs[acc.ID] = true
+			continue
+		}
+
+		if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
+			lastErr = fmt.Sprintf("account %s (platform=%s) server error (%d)", acc.Name, acc.Platform, resp.StatusCode)
+			log.Printf("[gateway] %s", lastErr)
+			resp.Body.Close()
+			failedIDs[acc.ID] = true
+			continue
+		}
+
+		g.account.MarkUsed(acc.ID)
+		return resp, acc, nil
+	}
+
+	return nil, nil, fmt.Errorf("all %d attempts failed, last error: %s", maxRetries, lastErr)
+}
+
 // LogUsage records a usage log entry.
 func (g *GatewayService) LogUsage(apiKey *model.APIKey, group *model.Group, account *model.Account,
 	requestID, modelName, requestedModel string,
@@ -168,6 +259,17 @@ func (g *GatewayService) LogUsage(apiKey *model.APIKey, group *model.Group, acco
 	durationMs int64, stream bool, resp *http.Response) {
 
 	costs := CalculateCost(modelName, inputTokens, outputTokens, cacheCreation, cacheRead)
+
+	m := account.Multiplier
+	if m <= 0 {
+		m = 1.0
+	}
+	if m != 1.0 {
+		costs.InputCost *= m
+		costs.OutputCost *= m
+		costs.CacheCreationCost *= m
+		costs.CacheReadCost *= m
+	}
 
 	var groupID *int64
 	var apiKeyID *int64
@@ -296,6 +398,133 @@ func (g *GatewayService) StreamResponse(w http.ResponseWriter, resp *http.Respon
 				if strings.TrimSpace(line) == "" {
 					flusher.Flush()
 				}
+			}
+		}
+	}
+
+	// Log usage
+	duration := time.Since(ctx.StartTime).Milliseconds()
+	var groupID *int64
+	var apiKeyID *int64
+	if ctx.Group != nil {
+		groupID = &ctx.Group.ID
+	}
+	if ctx.APIKey != nil {
+		apiKeyID = &ctx.APIKey.ID
+	}
+
+	statusCode := resp.StatusCode
+	errType := ""
+	if statusCode >= 400 {
+		errType = http.StatusText(statusCode)
+	}
+
+	costs := CalculateCost(ctx.Model, usage.inputTokens, usage.outputTokens, usage.cacheCreation, usage.cacheRead)
+	usageLog := &model.UsageLog{
+		RequestID:           ctx.RequestID,
+		APIKeyID:            apiKeyID,
+		AccountID:           ctx.Account.ID,
+		GroupID:             groupID,
+		Model:               ctx.Model,
+		RequestedModel:      strPtr(ctx.RequestedModel),
+		InputTokens:         usage.inputTokens,
+		OutputTokens:        usage.outputTokens,
+		CacheCreationTokens: usage.cacheCreation,
+		CacheReadTokens:     usage.cacheRead,
+		InputCost:           costs.InputCost,
+		OutputCost:          costs.OutputCost,
+		CacheCreationCost:   costs.CacheCreationCost,
+		CacheReadCost:       costs.CacheReadCost,
+		TotalCost:           costs.Total(),
+		Stream:              true,
+		DurationMs:          intPtr(int(duration)),
+		StatusCode:          intPtr(statusCode),
+		ErrorType:           strPtr(errType),
+	}
+	if logErr := g.usage.Log(usageLog); logErr != nil {
+		log.Printf("[gateway] failed to log stream usage: %v", logErr)
+	}
+}
+
+// SSELineConverter converts an upstream SSE line to zero or more output lines.
+type SSELineConverter func(line string) []string
+
+// StreamResponseWithConverter proxies a streaming response with per-line SSE conversion.
+func (g *GatewayService) StreamResponseWithConverter(
+	w http.ResponseWriter,
+	resp *http.Response,
+	ctx *RequestContext,
+	convertFn SSELineConverter,
+) {
+	defer resp.Body.Close()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		io.Copy(w, resp.Body)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(resp.StatusCode)
+
+	usage := &streamUsageData{}
+
+	events := make(chan scanEvent, 32)
+	done := make(chan struct{})
+	go func() {
+		defer close(events)
+		buf := make([]byte, 64*1024)
+		scanner := newLineScanner(resp.Body, buf)
+		for scanner.Scan() {
+			select {
+			case events <- scanEvent{line: scanner.Text()}:
+			case <-done:
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			select {
+			case events <- scanEvent{err: err}:
+			case <-done:
+			}
+		}
+	}()
+	defer close(done)
+
+	clientDisconnected := false
+
+	for ev := range events {
+		if ev.err != nil {
+			if clientDisconnected {
+				log.Printf("[gateway] upstream read error after client disconnect: %v", ev.err)
+			}
+			break
+		}
+
+		line := ev.line
+
+		// Extract usage from raw upstream data (before conversion)
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data != "[DONE]" {
+				extractUsageFromData(data, usage)
+			}
+		}
+
+		if !clientDisconnected {
+			converted := convertFn(line)
+			for _, cl := range converted {
+				if _, werr := fmt.Fprintln(w, cl); werr != nil {
+					clientDisconnected = true
+					log.Printf("[gateway] client disconnected during streaming")
+					break
+				}
+			}
+			if !clientDisconnected && strings.TrimSpace(line) == "" {
+				flusher.Flush()
 			}
 		}
 	}
